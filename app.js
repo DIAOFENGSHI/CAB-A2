@@ -15,20 +15,20 @@ const jpeg = require("jpeg-js");
 const redis = require("redis");
 const AWS = require("aws-sdk");
 var app = express();
-const host = "13.55.32.170";
+const host = "3.25.102.23";
 const port = "8000";
 const s3 = new AWS.S3({ apiVersion: "2006-03-01" });
 const bucketName = "n10840044";
 
 // Redis setup
 const client = redis.createClient({
-  socket: {
-    host: "n10840044.km2jzi.ng.0001.apse2.cache.amazonaws.com",
-    port: 6379,
-  },
-});
-
+  host: "master.transit.km2jzi.apse2.cache.amazonaws.com", 
+  port: 6379, }
+  // auth_pass: '5ANgDt+US531KuI38ADEdUh3lFbGum8cxl04ek+HG1JR3ToFPjxlok6I07do6CWy', 
+  // tls: { checkServerIdentity: () => undefined },}
+  );
 // wait for connection
+
 (async () => {
   try {
     await client.connect();
@@ -64,7 +64,27 @@ var config = {
     url: "https://api.qldtraffic.qld.gov.au/v1/webcams?apikey=3e83add325cbb69ac4d8e5bf433d770b",
   };
 
+// check the bucket, key and expire
+// fetch new api info, create new bucket, create the key
+// put it in s3
+// s3 has two: bucket api top list, user
+
+// support sign in, log in, and free-login
+
 app.get("/init", async (req, res) => {
+  const bucketApiInfo = "n10840044-api"
+  function createBucket(bucketApiInfo){
+  s3.createBucket({ Bucket: bucketApiInfo })
+  .promise()
+  .then(() => console.log(`Created bucket: ${bucketApiInfo}`))
+  .catch((err) => {
+    // We will ignore 409 errors which indicate that the bucket already
+    if (err.statusCode !== 409) {
+      console.log(`Error creating bucket: ${err}`);
+    }
+  });
+  }
+  createBucket(bucketApiInfo)
   const response = await axios(config)
   // save the response.data to redis
   const info = response.data.features.map((feature)=>{
@@ -74,12 +94,39 @@ app.get("/init", async (req, res) => {
       coordinates:feature.geometry.coordinates,
     }
   })
-  // ttl for s3 is one day ???
   s3Key = "qldTrafficApi"
   const body = JSON.stringify(info)
   const objectParams = { Bucket: bucketName, Key: s3Key, Body: body };
   await s3.putObject(objectParams).promise();
+  try{
+    client.set(
+      "god",
+      80,
+    )
+  }catch(err){
+    console.log(err)
+  }
+  try{
+    const s = await client.get(`god`)
+    console.log(s)
+  }catch(err){
+    console.log(err)
+  }
+  const date = new Date()
+  const day = JSON.stringify(date).slice(1,11)
+  console.log(day)
+  
   res.json(info)
+})
+
+app.get("/getCookie", async (req, res) => {
+  console.log(req.cookies)
+  res.send(req.cookies);
+})
+
+app.get("/setCookie", async (req, res) => {
+  res.cookie(`stone`,`rocky`)
+  res.send('<h1>welcome to a simple HTTP cookie server</h1>')
 })
 
 app.post("/trafficfllow", async (req, res) => {

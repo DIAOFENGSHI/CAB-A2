@@ -1,0 +1,8 @@
+5ANgDt+US531KuI38ADEdUh3lFbGum8cxl04ek+HG1JR3ToFPjxlok6I07do6CWy
+
+
+redis-cli -h master.transit.km2jzi.apse2.cache.amazonaws.com -p 6379
+
+redis-cli -h n10840044.km2jzi.ng.0001.apse2.cache.amazonaws.com -p 6379
+
+redis-cli -h master.transit.km2jzi.apse2.cache.amazonaws.com -p 6379
