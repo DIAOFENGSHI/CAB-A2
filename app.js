@@ -1,4 +1,3 @@
-var createError = require("http-errors");
 var express = require("express");
 var path = require("path");
 var cookieParser = require("cookie-parser");
@@ -6,131 +5,165 @@ var logger = require("morgan");
 var axios = require("axios");
 var indexRouter = require("./routes/index");
 var usersRouter = require("./routes/users");
-// require("@tensorflow/tfjs-backend-cpu");
-// require("@tensorflow/tfjs-backend-webgl");
 const tf = require("@tensorflow/tfjs");
 const cocoSsd = require("@tensorflow-models/coco-ssd");
-const fs = require("fs");
 const jpeg = require("jpeg-js");
 const redis = require("redis");
 const AWS = require("aws-sdk");
 var app = express();
-const host = "3.25.102.23";
 const port = "8000";
-const s3 = new AWS.S3({ apiVersion: "2006-03-01" });
-const bucketName = "n10840044";
+const bucketName = "n10840044-traffic-aid"
+const key_QLDtrafficAPI = "QLDtrafficAPI"
+const key_TopTen = "TopTen"
 
+// S3 setup - IAM role 
+const s3Client = new AWS.S3({ apiVersion: "2006-03-01" });
+
+// ./redis-cli -h n10840044.km2jzi.ng.0001.apse2.cache.amazonaws.com -p 6379
+// ./redis-cli -h master.traffic-aid.km2jzi.apse2.cache.amazonaws.com --tls -a 0bc4041c48a71d35b9389055
 // Redis setup
-const client = redis.createClient({
-  host: "master.transit.km2jzi.apse2.cache.amazonaws.com", 
-  port: 6379, }
-  // auth_pass: '5ANgDt+US531KuI38ADEdUh3lFbGum8cxl04ek+HG1JR3ToFPjxlok6I07do6CWy', 
-  // tls: { checkServerIdentity: () => undefined },}
-  );
-// wait for connection
+const url = `rediss://master.traffic-aid.km2jzi.apse2.cache.amazonaws.com:6379`;
+const redisClient = redis.createClient({
+    url,
+    password: '0bc4041c48a71d35b9389055'
+});
 
+// wait for Redis connection
 (async () => {
   try {
-    await client.connect();
+    await redisClient.connect();
   } catch (err) {
     console.log(err);
   }
 })();
 
 // Print redis errors to the console
-client.on("error", (err) => {
+redisClient.on("error", (err) => {
   console.log("Error " + err);
 });
 
-client.on("connect", () => {
-  console.log("Connected");
+// when redis is connected
+redisClient.on("connect", () => {
+  console.log("Redis connected");
 });
 
 // view engine setup
 app.set("views", path.join(__dirname, "views"));
 app.set("view engine", "jade");
-
 app.use(logger("dev"));
 app.use(express.json());
 app.use(express.urlencoded({ extended: false }));
 app.use(cookieParser());
 app.use(express.static(path.join(__dirname, "public")));
-
 app.use("/", indexRouter);
 app.use("/users", usersRouter);
 
-var config = {
-    method: "get",
-    url: "https://api.qldtraffic.qld.gov.au/v1/webcams?apikey=3e83add325cbb69ac4d8e5bf433d770b",
-  };
-
-// check the bucket, key and expire
-// fetch new api info, create new bucket, create the key
-// put it in s3
-// s3 has two: bucket api top list, user
-
-// support sign in, log in, and free-login
-
-app.get("/init", async (req, res) => {
-  const bucketApiInfo = "n10840044-api"
-  function createBucket(bucketApiInfo){
-  s3.createBucket({ Bucket: bucketApiInfo })
-  .promise()
-  .then(() => console.log(`Created bucket: ${bucketApiInfo}`))
-  .catch((err) => {
+// functions
+async function createBucket(bucketName){
+  try{
+    await s3Client.createBucket({ Bucket: bucketName }).promise()
+    console.log(`Created bucket: ${bucketName}`)  
+  }
+  catch(err){
     // We will ignore 409 errors which indicate that the bucket already
     if (err.statusCode !== 409) {
       console.log(`Error creating bucket: ${err}`);
-    }
-  });
-  }
-  createBucket(bucketApiInfo)
-  const response = await axios(config)
-  // save the response.data to redis
-  const info = response.data.features.map((feature)=>{
-    return {
-      id:feature.properties.id,
-      description:feature.properties.description,
-      coordinates:feature.geometry.coordinates,
-    }
-  })
-  s3Key = "qldTrafficApi"
-  const body = JSON.stringify(info)
-  const objectParams = { Bucket: bucketName, Key: s3Key, Body: body };
-  await s3.putObject(objectParams).promise();
-  try{
-    client.set(
-      "god",
-      80,
-    )
-  }catch(err){
-    console.log(err)
-  }
-  try{
-    const s = await client.get(`god`)
-    console.log(s)
-  }catch(err){
-    console.log(err)
-  }
-  const date = new Date()
-  const day = JSON.stringify(date).slice(1,11)
-  console.log(day)
+}};}
   
-  res.json(info)
-})
+async function checkBucketExists(bucket){ 
+  const options = {
+    Bucket: bucket,
+  };
+  try {
+    await s3Client.headBucket(options).promise();
+    console.log(`Bucket ${bucket} in the S3`)
+    return true;
+  } catch (error) {
+    if (error.statusCode === 404) {
+      return false;
+    }
+    throw error;
+  }
+};
 
-app.get("/getCookie", async (req, res) => {
-  console.log(req.cookies)
-  res.send(req.cookies);
-})
+async function getS3Object(bucketName,keyName){
+  try{
+    const params = { Bucket: bucketName, Key: keyName };
+    const s3Result = await s3Client.getObject(params).promise();
+    const s3JSON = JSON.parse(s3Result.Body);
+    console.log(`Get ${keyName} successfully from S3 ${keyName}`)
+    return s3JSON
+  }
+  catch(err){
+    console.log(`Failed to get ${keyName}, error status code is ${err.statusCode}`)
+    return false
+  }
+}
 
-app.get("/setCookie", async (req, res) => {
-  res.cookie(`stone`,`rocky`)
-  res.send('<h1>welcome to a simple HTTP cookie server</h1>')
-})
+async function putS3Object(bucketName,keyName,date){
+  try{
+    const body = JSON.stringify(date)
+    const objectParams = { Bucket: bucketName, Key: keyName, Body: body };
+    await s3Client.putObject(objectParams).promise();
+    console.log(`Save ${keyName} successfully to S3 ${keyName}`)
+  }
+  catch(err){
+    console.log(`Failed to get ${keyName} from S3, error status code is ${err.statusCode}`)
+    throw err
+  }
+}
 
-app.post("/trafficfllow", async (req, res) => {
-  async function getPrediction(buf){
+async function fetchQLDTraffic(){
+  const config = {
+    method: "get",
+    url: "https://api.qldtraffic.qld.gov.au/v1/webcams?apikey=3e83add325cbb69ac4d8e5bf433d770b",
+  };
+  const response = await axios(config)
+  return response
+}
+
+function getDate(){
+  const date = new Date(new Date().toUTCString())
+  const day = JSON.stringify(date).slice(1,11)
+  return day
+}
+
+function checkTimeStamp(apiInfo){
+  const day = getDate()
+  if(day != apiInfo.validity){return false}
+  else{return true}
+}
+
+async function getRedisKey(keyName){
+  try{
+    const result = await redisClient.get(keyName);
+    return result
+  }
+  catch(err){
+    throw err
+  }
+}
+
+async function setRedisKey(keyName,content,ttl){
+  try{
+    const value = JSON.stringify({
+      source: "Redis Cache",
+      ...content,
+        })
+  await redisClient.setEx(
+      keyName,
+      ttl, // ttl is 60 seconds
+      value)
+  return value
+  }
+  catch(err){
+    throw err
+  }
+}
+
+async function getPrediction(url){
+    const buf = await axios.get(
+      url, {responseType: 'arraybuffer',})
     const model = await cocoSsd.load()
     const NUMBER_OF_CHANNELS = 3
     const pixels = jpeg.decode(buf.data, true)
@@ -153,50 +186,146 @@ app.post("/trafficfllow", async (req, res) => {
     }
     const input = imageToInput(pixels, NUMBER_OF_CHANNELS)
     const predictions = await model.detect(input)
-    return predictions
-  }
-
-  const locations_id = req.body
-
-  // check result in redis, if all meet, return result
-
-  // if not go next
-  
-  // if part, filter the locations_id, use a array to carry the redis outcome, then add them together later
-
-
-  // check api in s3
-  const value = await client.get("sun")
-  console.log(value)
-
-  // if there is not, fetch
-  const response = await axios(config)
-  const sources = response.data.features
-  const locations = locations_id.map((id)=>{
-      return sources.filter((source)=>{return source.properties.id == id})[0]
-  })
-
-  // when have the api info, analyse the picture by locations id
-  const result = await Promise.all(locations.map(async (location)=>
-  {
-    const buf = await axios.get(
-      location.properties.image_url, {responseType: 'arraybuffer',})
-    const prediction = await getPrediction(buf)
-    const precise = prediction.filter((predict)=>{
+    const precise = predictions.filter((predict)=>{
         return predict.class == "car" || predict.class == "truck"
     })
     return precise
-  }))
-  
-  // save the result to redis
-  
-  // qury s3 for the count of location 
-  
-  // add the count then pass to s3
+  }
 
-  // give respinse in vechicle and count
+async function fetchQLDTrafficAPI(){
+  // find the key - QLDtrafficAPI, if yes, fetch, check the validity
+    var trafficInfo = await getS3Object(bucketName,key_QLDtrafficAPI)
+    const validity = checkTimeStamp(trafficInfo)
+    // no or invalid, fetch api, then add the timestamp
+    if(!trafficInfo || !validity){
+      console.log("Fetch QLDtraffic API due to no info or invalid")
+      const response = await fetchQLDTraffic()
+      trafficInfo = response.data.features.map((feature)=>{
+      return {
+        id:feature.properties.id,
+        description:feature.properties.description,
+        url:feature.properties.image_url,
+        coordinates:feature.geometry.coordinates,
+        }
+      })
+      trafficInfo = {source:"QLDTraffic API",validity:getDate(),info:trafficInfo}
+    // save to s3
+      data = {...trafficInfo}
+      data.source = "S3"
+      await putS3Object(bucketName,key_QLDtrafficAPI,data)
+    }
+    return trafficInfo
+}
 
-  res.json(result)
+
+app.get("/init", async (req, res) => {
+  try{
+    // checkt the bucket
+    const bucket = await checkBucketExists(bucketName)
+    if(!bucket) {await createBucket(bucketName)}
+    const trafficInfo = await fetchQLDTrafficAPI()
+    // find the key - TopTen
+    var toptenInfo = await getS3Object(bucketName,key_TopTen)
+    var topTen = {}
+    // no, create a location object array, add the count propery for each location, set the property to zero, then split top ten
+    if(!toptenInfo){
+      console.log("Generate Top Ten")
+      toptenInfo = trafficInfo.info.map((location)=>{
+        return{
+          name:location.description,
+          id:location.id,
+          count:0,
+        }
+      })
+      await putS3Object(bucketName,key_TopTen,toptenInfo)
+      topTen = {source:"New",data:toptenInfo.slice(0,10)}
+    }
+    // yes, split to top ten
+    else{ 
+    topTen = {source:"S3",data:toptenInfo.slice(0,10)}
+    }
+    // return the locations and topten
+    res.status(200).json({apiInfo:trafficInfo,TopTen:topTen})
+  }
+  catch(err){
+    console.log(err)
+    res.status(500).send('Status: Service Not Available')
+  }
+})
+
+function addCount(locations,toptenInfo){
+  locations.map((locationID)=>{
+    toptenInfo = toptenInfo.map((location)=>{
+      if(location.id == locationID){
+        location.count = location.count + 1
+        return location
+      }
+      else{
+        return location
+      }
+    })
+  })
+  toptenInfo.sort(
+    (l1, l2) => 
+    (l1.count < l2.count) ? 1 : (l1.count > l2.count) ? -1 : 0);
+  return toptenInfo
+  }
+function includesNullValue(arr){
+  const check = arr.filter((ele)=>{if(ele.count==null){ console.log(ele.id);return 1}})
+  if(check == null){return false}
+  else{return true}
+}
+app.post("/traffic", async (req, res) => {
+  try{
+    const locations = req.body
+    // get top ten from S3
+    var toptenInfo = await getS3Object(bucketName,key_TopTen)
+    // add top ten by the locations
+    const data = addCount(locations,toptenInfo)
+    // save top ten to S3
+    await putS3Object(bucketName,key_TopTen,data)
+    const topTen = {source:"Processed",data:data.slice(0,10)}
+    // check in redis
+    var countInfo = await Promise.all(locations.map(async (ID)=> {
+      const count = await getRedisKey(ID.toString())
+      if(count == null){
+        return {id:ID,count:count}
+      }
+      else{
+        return JSON.parse(count)
+      }
+    }))
+    if(includesNullValue(countInfo)){
+      const trafficInfo = await fetchQLDTrafficAPI()
+      countInfo = await Promise.all(countInfo.map(async (location)=>{
+      if(location.count == null){
+          const info = trafficInfo.info.filter((cam)=>{
+            if(cam.id == location.id){
+              return cam
+            }
+          })[0]
+          const prediction = await getPrediction(info.url)
+          location.count = prediction
+          setRedisKey(location.id.toString(),location,60)
+          return {
+            source: "TensorFlow",
+            id:location.id,
+            count:location.count.length,
+            countInfo:location.count
+        }
+      }
+      else{
+        return location
+      }
+    }))
+
+  }
+  res.status(200).json({apiInfo:countInfo,TopTen:topTen})
+  }
+  catch(err){
+    console.log(err)
+    res.status(500).send('Status: Service Not Available')
+  }
 })
 
 app.listen(port, () => {
